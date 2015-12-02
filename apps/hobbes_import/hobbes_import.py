@@ -57,6 +57,8 @@ from HydraLib.PluginLib import JsonConnection
 from HydraLib.HydraException import HydraPluginError
 from HydraLib.PluginLib import write_progress, write_output, validate_plugin_xml, RequestError
 
+from create_hobbes_template import HobbesTemplateBuilder 
+
 import json
 
 import requests
@@ -77,6 +79,17 @@ class HobbesImporter(object):
 
         self.warnings = []
         self.files    = []
+        self.template = None
+        self.attributes = []
+        self.attr_name_map = {}
+
+        self.nodes = {}
+        self.links = {}
+        self.groups = {}
+        
+        self.node_id  = PluginLib.temp_ids()
+        self.link_id  = PluginLib.temp_ids()
+        self.group_id  = PluginLib.temp_ids()
 
         self.connection = JsonConnection(url)
         if session_id is not None:
@@ -121,11 +134,30 @@ class HobbesImporter(object):
         dataset = {
             'dimension': 'dimensionless',
             'unit':None,
-            'data_type': 'descriptor'
+            'data_type': 'descriptor',
             'value'    : json_repo['tag'],
             'metadata' : json_repo,
         }
         return dataset
+
+    def upload_template(self):
+        """
+            Upload the template file found in ./template.xml
+        """
+        file_ = os.path.join(__location__, 'template.xml')
+
+        with open(file_) as f:
+            xml_template = f.read()
+
+        self.template = self.connection.call('upload_template_xml',
+                                    {'template_xml':xml_template})
+
+        self.attributes = self.connection.call('get_template_attributes',
+                                               {'template_id':self.template.id})
+
+        #Build a lookup dict of attributes by name
+        for a in self.attributes:
+            self.attr_name_map[a.name] = a
 
     def import_network(self, project_id=None):
         """
@@ -156,18 +188,52 @@ class HobbesImporter(object):
         for node in json_net:
             props = node['properties']
             node_coords = node['geometry']['coordinates']
+            
+            tmp_node_id = self.node_id.next()
+            
             node = dict(
-                name = props['prmname']
-                x = node_coords[0] #swap these if they are lat-long, not x-y
-                y = node_coords[1]
-                description = props['description']
+                id = tmp_node_id,
+                name = props['prmname'],
+                x = node_coords[0], #swap these if they are lat-long, not x-y
+                y = node_coords[1],
+                description = props['description'],
             )
+            self.nodes[props['prmname']] = node
+
             inlinks = [o['link_prmname'] for o in props['origins']]
+            for linkname in inlinks:
+                if linkname not in self.links:
+                    link = dict(
+                        id=self.link_id.next(),
+                        node_2_id = tmp_node_id,
+                        attributes = [],
+                        description = "",
+                    )
+                    self.links[linkname] = link
+                else:
+                    link = self.links[linkname]
+                    link['node_2_id'] = tmp_node_id
+
+
             outlinks = [o['link_prmname'] for o in props['terminals']] 
+            for linkname in outlinks:
+                if linkname not in self.links:
+                    link = dict(
+                        id=self.link_id.next(),
+                        node_1_id = tmp_node_id,
+                        attributes = [],
+                        description = "",
+                    )
+                    self.links[linkname] = link
+                else:
+                    link = self.links[linkname]
+                    link['node_1_id'] = tmp_node_id
+
+            import pudb; pudb.set_trace()
+
             node_groups = props['regions']
 
             #List of parameters to ignore
-            non_attributes = ['origins', 'prmname', 'regions', 'repo', 'terminals']
 
             #repo is a special case
             repo = make_repo_dataset(props['repo'])
@@ -175,7 +241,6 @@ class HobbesImporter(object):
             extras = props.get('extras', [])
             if extras is not None and len(extras) > 0:
                 attr_response = requests.get("http://cwn.casil.ucdavis.edu/network/extras?prmname=%s"%props['prmname']) #JSON attributes
-                import pudb; pudb.set_trace()        
                 if attr_response.status_code != 200:
                     raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
                 extra_data[node_name] = attr_response.content
@@ -192,7 +257,7 @@ class HobbesImporter(object):
 
 def commandline_parser():
     parser = ap.ArgumentParser(
-        description="""Import a network in JSON format.
+        description="""Import a network from HOBBES format.
 
 Written by Stephen Knox <stephen.knox@manchester.ac.uk>
 (c) Copyright 2015, University of Manchester.
@@ -210,20 +275,30 @@ Written by Stephen Knox <stephen.knox@manchester.ac.uk>
 
 
 def run():
+
     parser = commandline_parser()
     args = parser.parse_args()
-    json_importer = HobbesImporter(url=args.server_url, session_id=args.session_id)
+    hobbes_importer = HobbesImporter(url=args.server_url, session_id=args.session_id)
+
+
+
     scenarios = []
     errors = []
     network_id = None
     try:      
-        write_progress(1, json_importer.num_steps) 
+        write_progress(1, hobbes_importer.num_steps) 
         
         validate_plugin_xml(os.path.join(__location__, 'plugin.xml'))
 
-        net = json_importer.import_network(args.project_id)
-        scenarios = [s.id for s in net.scenarios]
-        network_id = net.id
+        tmpl = HobbesTemplateBuilder()
+        tmpl.convert()
+
+        hobbes_importer.upload_template()
+        
+        net = hobbes_importer.import_network(args.project_id)
+
+        #scenarios = [s.id for s in net.scenarios]
+        #network_id = net.id
         message = "Import complete"
     except HydraPluginError as e:
         message="An error has occurred"
@@ -238,9 +313,9 @@ def run():
                                                  network_id,
                                                  scenarios,
                                                  errors,
-                                                 json_importer.warnings,
+                                                 hobbes_importer.warnings,
                                                  message,
-                                                 json_importer.files)
+                                                 hobbes_importer.files)
     print xml_response
 
 if __name__ == '__main__':

@@ -156,11 +156,9 @@ class HobbesTemplateBuilder(object):
                 att_var.text = 'N'
 
         with open(self.output, "w") as fout:
-            fout.write(etree.tostring(tree, pretty_print=True,
-                                      xml_declaration=True, encoding='utf-8'))
+            fout.write(etree.tostring(tree, pretty_print=True))
 
         xsd_validate(self.output)
-
 
 def run():
     template_builder = HobbesTemplateBuilder()
