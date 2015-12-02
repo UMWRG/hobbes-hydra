@@ -35,6 +35,7 @@ Options
 Option                 Short  Parameter    Description
 ====================== ====== ============ =========================================
 ``--help``             ``-h``              Show help message and exit.
+``--project-id``       ``-p`` PROJECT_ID   The Project to import data into.
 ``--node``             ``-n`` NODE_NAME    The name of the node to import data from.
 ``--target-node``      ``-n`` TARGET_NODE  The ID of the node to import data to.
 ``--attribute``        ``-a`` ATTRIBUTE_ID The ID of the attribute to import data to.
@@ -58,6 +59,8 @@ from HydraLib.PluginLib import write_progress, write_output, validate_plugin_xml
 
 import json
 
+import requests
+
 import os, sys
 
 from datetime import datetime
@@ -70,9 +73,6 @@ class HobbesImporter(object):
     """
        Importer of JSON files into Hydra. Also accepts XML files.
     """
-
-    Network = None
-
     def __init__(self, url=None, session_id=None):
 
         self.warnings = []
@@ -88,41 +88,106 @@ class HobbesImporter(object):
         #3 steps: start, read, save 
         self.num_steps = 3
 
-    def import_network(self, network):
+    def fetch_project(self, project_id):
+        """
+            If a project ID is not specified, a new one
+            must be created to hold the incoming network. 
+            If an ID is specified, we must retrieve the project to make sure
+            it exists. If it does not exist, then throw an error.
+
+            Returns the project object so that the network can access it's ID.
+        """
+        if project_id is not None:
+            try:
+                project = self.connection.call('get_project', {'project_id':project_id})
+                log.info('Loading existing project (ID=%s)' % project_id)
+                return project
+            except RequestError:
+                raise HydraPluginError("Project with ID %s not found"%project_id)
+
+        #Using 'datetime.now()' in the name guarantees a unique project name.
+        new_project = dict(
+            name = "Hobbes Project created at %s" % (datetime.now()),
+            description = \
+            "Default project created by the %s plug-in." % \
+                (self.__class__.__name__),
+        )
+
+        saved_project = self.connection.call('add_project', {'project':new_project})
+        
+        return saved_project 
+
+    def make_repo_dataset(self, json_repo):
+        dataset = {
+            'dimension': 'dimensionless',
+            'unit':None,
+            'data_type': 'descriptor'
+            'value'    : json_repo['tag'],
+            'metadata' : json_repo,
+        }
+        return dataset
+
+    def import_network(self, project_id=None):
         """
             Read the file containing the network data and send it to
             the server.
         """
         
-        write_output("Reading Network") 
-        write_progress(2, self.num_steps) 
+        write_output("Fetching Network") 
+        write_progress(2, self.num_steps)
 
-        if network is not None:
-            network_file = open(network).readlines()
-            text = "".join(x for x in network_file)
-            
-            try:
-                network_data = json.loads(text)
-            except:
 
-                try:
-                    json_string = xml2json(network_file[0])
-                    network_data = json.loads(json_string)
-                    network_data = network_data['network']
-                except Exception, e:
-                    log.exception(e)
-                    raise HydraPluginError("Unrecognised data format.")
-            
-            project = self.create_project(network_data)
-            network_data['project_id'] = project['id']
+        hydra_network = {
+            'nodes': [],
+            'links': [],
+            'groups': [],
+            'scenarios': []
+        }
 
-            write_output("Saving Network") 
-            write_progress(3, self.num_steps) 
+        net_response = requests.get("http://cwn.casil.ucdavis.edu/network/get") #JSON Network
+        #http://cwn.casil.ucdavis.edu/excel/create?prmname=SR_CLE    #XLS
 
-            #The network ID can be specified to get the network...
-            network = self.connection.call('add_network', {'net':network_data})
-        else:
-            raise HydraPluginError("A network ID must be specified!")
+        if net_response.status_code != 200:
+            raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
+
+        json_net = json.loads(net_response.content)
+
+        extra_data = {}
+        for node in json_net:
+            props = node['properties']
+            node_coords = node['geometry']['coordinates']
+            node = dict(
+                name = props['prmname']
+                x = node_coords[0] #swap these if they are lat-long, not x-y
+                y = node_coords[1]
+                description = props['description']
+            )
+            inlinks = [o['link_prmname'] for o in props['origins']]
+            outlinks = [o['link_prmname'] for o in props['terminals']] 
+            node_groups = props['regions']
+
+            #List of parameters to ignore
+            non_attributes = ['origins', 'prmname', 'regions', 'repo', 'terminals']
+
+            #repo is a special case
+            repo = make_repo_dataset(props['repo'])
+
+            extras = props.get('extras', [])
+            if extras is not None and len(extras) > 0:
+                attr_response = requests.get("http://cwn.casil.ucdavis.edu/network/extras?prmname=%s"%props['prmname']) #JSON attributes
+                import pudb; pudb.set_trace()        
+                if attr_response.status_code != 200:
+                    raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
+                extra_data[node_name] = attr_response.content
+
+        project = self.fetch_project(project_id)
+        project_id = project.id
+
+        write_output("Saving Network") 
+        write_progress(3, self.num_steps) 
+
+        #The network ID can be specified to get the network...
+        network = self.connection.call('add_network', {'net':network_data})
         return network
 
 def commandline_parser():
@@ -133,10 +198,8 @@ Written by Stephen Knox <stephen.knox@manchester.ac.uk>
 (c) Copyright 2015, University of Manchester.
         """, epilog="For more information visit www.hydraplatform.org",
         formatter_class=ap.RawDescriptionHelpFormatter)
-    parser.add_argument('-t', '--network',
-                        help='''Specify the network_id of the network to be exported.
-                        If the network_id is not known, specify the network name. In
-                        this case, a project ID must also be provided''')
+    parser.add_argument('-p', '--project-id',
+                        help='''The Project to import data into. If none is provided, a new project is created.''')
     parser.add_argument('-u', '--server-url',
                         help='''Specify the URL of the server to which this
                         plug-in connects.''')
@@ -149,16 +212,16 @@ Written by Stephen Knox <stephen.knox@manchester.ac.uk>
 def run():
     parser = commandline_parser()
     args = parser.parse_args()
-    json_importer = ImportJSON(url=args.server_url, session_id=args.session_id)
-    network_id = None
+    json_importer = HobbesImporter(url=args.server_url, session_id=args.session_id)
     scenarios = []
     errors = []
+    network_id = None
     try:      
         write_progress(1, json_importer.num_steps) 
         
         validate_plugin_xml(os.path.join(__location__, 'plugin.xml'))
 
-        net = json_importer.import_network(args.network)
+        net = json_importer.import_network(args.project_id)
         scenarios = [s.id for s in net.scenarios]
         network_id = net.id
         message = "Import complete"
@@ -167,7 +230,7 @@ def run():
         errors = [e.message]
         log.exception(e)
     except Exception, e:
-        message="An error has occurred"
+        message="An unknown error has occurred"
         log.exception(e)
         errors = [e]
 

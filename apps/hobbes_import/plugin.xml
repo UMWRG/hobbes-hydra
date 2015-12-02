@@ -1,0 +1,42 @@
+<plugin_info>
+    <plugin_name>Import from HOBBES</plugin_name>
+    <plugin_dir>hobbes_import.bat</plugin_dir>
+    <plugin_description>Import the HOBBES network to Hydra</plugin_description>
+    <plugin_epilog>
+        Written by Stephen Knox stephen.knox@mancheser.ac.uk
+        (c) Copyright 2015, University of Manechster.
+        For more information visit www.hydraplatform.org
+    </plugin_epilog>
+    <smallicon>icon16.png</smallicon>
+    <largeicon>icon32.png</largeicon>
+    <mandatory_args>
+       <arg>
+           <name>Project</name>
+           <switch>-p</switch>
+           <multiple>N</multiple>
+           <argtype>string</argtype>
+           <help>The ID of an existing project. If no project is
+                        specified a new one will be created.</help>
+        </arg>
+    </mandatory_args>
+   <non_mandatory_args>
+        <arg>
+            <name>server_url</name>
+            <switch>-u</switch>
+            <multiple>N</multiple>
+            <argtype>string</argtype>
+            <help>Specify the URL of the server to which this
+                        plug-in connects.</help>
+        </arg>
+        <arg>
+            <name>session_id</name>
+            <switch>-c</switch>
+            <multiple>N</multiple>
+            <argtype>string</argtype>
+            <help>Specify the session ID for the connection. If not specified,
+            the plugin will try to connect based on the credentials it finds in config</help>
+        </arg>
+    </non_mandatory_args> 
+    <switches>
+    </switches>
+ </plugin_info>
