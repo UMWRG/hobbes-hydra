@@ -77,6 +77,8 @@ class HobbesImporter(object):
     """
     def __init__(self, url=None, session_id=None):
 
+        self.json_net = None
+
         self.warnings = []
         self.files    = []
         self.template = None
@@ -130,6 +132,25 @@ class HobbesImporter(object):
         
         return saved_project 
 
+    def fetch_template(self, template_id):
+        self.template = self.connection.call('get_template',
+                                             {'template_id':int(template_id)})
+
+    def fetch_remote_network(self):
+        """
+            Request the hobbes network from the hobbes server
+        """
+        write_output("Fetching Network") 
+        write_progress(2, self.num_steps)
+
+        net_response = requests.get("http://cwn.casil.ucdavis.edu/network/get") #JSON Network
+        #http://cwn.casil.ucdavis.edu/excel/create?prmname=SR_CLE    #XLS
+
+        if net_response.status_code != 200:
+            raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
+
+        self.json_net = json.loads(net_response.content)
+
     def make_repo_dataset(self, json_repo):
         dataset = {
             'dimension': 'dimensionless',
@@ -159,52 +180,58 @@ class HobbesImporter(object):
         for a in self.attributes:
             self.attr_name_map[a.name] = a
 
-    def import_network(self, project_id=None):
+    def import_network_topology(self, project_id=None):
         """
             Read the file containing the network data and send it to
             the server.
         """
-        
-        write_output("Fetching Network") 
-        write_progress(2, self.num_steps)
 
+        if self.json_net is None:
+            self.fetch_remote_network()
 
-        hydra_network = {
-            'nodes': [],
-            'links': [],
-            'groups': [],
-            'scenarios': []
-        }
-
-        net_response = requests.get("http://cwn.casil.ucdavis.edu/network/get") #JSON Network
-        #http://cwn.casil.ucdavis.edu/excel/create?prmname=SR_CLE    #XLS
-
-        if net_response.status_code != 200:
-            raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
-
-        json_net = json.loads(net_response.content)
-
-        extra_data = {}
-        for node in json_net:
+        for node in self.json_net:
             props = node['properties']
+            node_type = props['type']
             node_coords = node['geometry']['coordinates']
             
             tmp_node_id = self.node_id.next()
-            
+
+            #TODO: HACK. WHy are there 2 coordinates for the node?
+            if isinstance(node_coords[0], list):
+                log.info("Using 1st coords of %s (%s)", node_coords, props['type'])
+                node_coords = node_coords[0]
+
+            log.info("X=%s, y=%s",node_coords[0], node_coords[1]) 
             node = dict(
                 id = tmp_node_id,
                 name = props['prmname'],
-                x = node_coords[0], #swap these if they are lat-long, not x-y
-                y = node_coords[1],
+                x = str(node_coords[0]), #swap these if they are lat-long, not x-y
+                y = str(node_coords[1]),
                 description = props['description'],
+                attributes = [],
+                types = [{'template_id':self.template.id,
+                          'id':node_type}]
             )
             self.nodes[props['prmname']] = node
 
-            inlinks = [o['link_prmname'] for o in props['origins']]
+            #ATTRIBUTES
+
+            #Find the matching type
+            for t in self.template.types:
+                if t.name == node_type:
+                    node['types'][0]['id'] = t.id
+                    #Assign the attributes to the node
+                    for tattr in t.typeattrs:
+                        node['attributes'].append(
+                            {'attr_id':tattr.attr_id}
+                        )
+
+            inlinks = [o['link_prmname'] for o in props.get('origins', [])]
             for linkname in inlinks:
                 if linkname not in self.links:
                     link = dict(
                         id=self.link_id.next(),
+                        name = linkname,
                         node_2_id = tmp_node_id,
                         attributes = [],
                         description = "",
@@ -215,11 +242,12 @@ class HobbesImporter(object):
                     link['node_2_id'] = tmp_node_id
 
 
-            outlinks = [o['link_prmname'] for o in props['terminals']] 
+            outlinks = [o['link_prmname'] for o in props.get('terminals', [])]
             for linkname in outlinks:
                 if linkname not in self.links:
                     link = dict(
                         id=self.link_id.next(),
+                        name = linkname,
                         node_1_id = tmp_node_id,
                         attributes = [],
                         description = "",
@@ -229,21 +257,7 @@ class HobbesImporter(object):
                     link = self.links[linkname]
                     link['node_1_id'] = tmp_node_id
 
-            import pudb; pudb.set_trace()
-
             node_groups = props['regions']
-
-            #List of parameters to ignore
-
-            #repo is a special case
-            repo = make_repo_dataset(props['repo'])
-
-            extras = props.get('extras', [])
-            if extras is not None and len(extras) > 0:
-                attr_response = requests.get("http://cwn.casil.ucdavis.edu/network/extras?prmname=%s"%props['prmname']) #JSON attributes
-                if attr_response.status_code != 200:
-                    raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
-                extra_data[node_name] = attr_response.content
 
         project = self.fetch_project(project_id)
         project_id = project.id
@@ -251,9 +265,36 @@ class HobbesImporter(object):
         write_output("Saving Network") 
         write_progress(3, self.num_steps) 
 
+
+        hydra_network = {
+            'name' : "HOBBES Network (%s)"%datetime.now(),
+            'description' : "Hobbes Network, imported directly from the web API",
+            'nodes': self.nodes.values(),
+            'links': self.links.values(),
+            'project_id' : project_id,
+            'projection':'EPSG:2229',
+            'groups': [],
+            'scenarios': []
+        }
+
         #The network ID can be specified to get the network...
-        network = self.connection.call('add_network', {'net':network_data})
-        return network
+        self.network = self.connection.call('add_network', {'net':hydra_network})
+        return self.network
+
+    def import_data(self):
+        #List of parameters to ignore
+
+        #repo is a special case
+        repo = self.make_repo_dataset(props['repo'])
+
+        extras = props.get('extras', [])
+        if extras is not None and len(extras) > 0:
+            attr_response = requests.get("http://cwn.casil.ucdavis.edu/network/extras?prmname=%s"%props['prmname']) #JSON attributes
+            if attr_response.status_code != 200:
+                raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
+            extra_data[node_name] = attr_response.content
+
+
 
 def commandline_parser():
     parser = ap.ArgumentParser(
@@ -265,6 +306,8 @@ Written by Stephen Knox <stephen.knox@manchester.ac.uk>
         formatter_class=ap.RawDescriptionHelpFormatter)
     parser.add_argument('-p', '--project-id',
                         help='''The Project to import data into. If none is provided, a new project is created.''')
+    parser.add_argument('-m', '--template-id',
+                        help='''The ID of the template. If none is provided, a template will be created''')
     parser.add_argument('-u', '--server-url',
                         help='''Specify the URL of the server to which this
                         plug-in connects.''')
@@ -280,8 +323,6 @@ def run():
     args = parser.parse_args()
     hobbes_importer = HobbesImporter(url=args.server_url, session_id=args.session_id)
 
-
-
     scenarios = []
     errors = []
     network_id = None
@@ -290,15 +331,21 @@ def run():
         
         validate_plugin_xml(os.path.join(__location__, 'plugin.xml'))
 
-        tmpl = HobbesTemplateBuilder()
-        tmpl.convert()
-
-        hobbes_importer.upload_template()
+        #This step is to avoid doing the request to make the template and 
+        #then again for the data.
+        hobbes_importer.fetch_remote_network()
         
-        net = hobbes_importer.import_network(args.project_id)
+        if args.template_id is None:
+            tmpl = HobbesTemplateBuilder()
+            tmpl.convert(hobbes_importer.json_net)
+            hobbes_importer.upload_template()
+        else:
+            hobbes_importer.fetch_template(args.template_id)
+        
+        net = hobbes_importer.import_network_topology(args.project_id)
 
         #scenarios = [s.id for s in net.scenarios]
-        #network_id = net.id
+        network_id = net.id
         message = "Import complete"
     except HydraPluginError as e:
         message="An error has occurred"

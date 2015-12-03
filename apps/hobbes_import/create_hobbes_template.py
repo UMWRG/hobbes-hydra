@@ -39,20 +39,20 @@ class HobbesTemplateBuilder(object):
     timeseries = []
     output = "template.xml"
 
-    def build_template_struct(self):
+    def build_template_struct(self, json_net=None):
         """
             Read the file containing the network data and build a template from it.
         """
 
-        net_response = requests.get("http://cwn.casil.ucdavis.edu/network/get") #JSON Network
-        #http://cwn.casil.ucdavis.edu/excel/create?prmname=SR_CLE    #XLS
 
         template_struct = {}
+        
+        if json_net is None:
+            net_response = requests.get("http://cwn.casil.ucdavis.edu/network/get") #JSON Network
+            if net_response.status_code != 200:
+                raise Exception("A connection error has occurred with status code: %s"%net_response.status_code)
 
-        if net_response.status_code != 200:
-            raise Exception("A connection error has occurred with status code: %s"%net_response.status_code)
-
-        json_net = json.loads(net_response.content)
+            json_net = json.loads(net_response.content)
 
         non_attributes = set(['origins', 'prmname', 'regions', 'terminals', 'description', 'extras', 'type'])
 
@@ -91,9 +91,9 @@ class HobbesTemplateBuilder(object):
 
         return template_struct
 
-    def convert(self):
+    def convert(self, json_net=None):
 
-        template_struct = self.build_template_struct()
+        template_struct = self.build_template_struct(json_net)
 
         template_name = 'HydraPlatform template for Hobbes'
 
