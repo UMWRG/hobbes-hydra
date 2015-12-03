@@ -165,7 +165,7 @@ class HobbesImporter(object):
         """
             Upload the template file found in ./template.xml
         """
-        file_ = os.path.join(__location__, 'template.xml')
+        file_ = os.path.join(__location__, '../', 'template', 'template.xml')
 
         with open(file_) as f:
             xml_template = f.read()

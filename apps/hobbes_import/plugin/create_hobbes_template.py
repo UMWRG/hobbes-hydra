@@ -37,13 +37,12 @@ class HobbesTemplateBuilder(object):
     #Keeps track of all the timeseries we identify in hobbes nodes so we
     #can set the correct data type in the template.
     timeseries = []
-    output = "template.xml"
+    output = os.path.join(__location__, '../', 'template', 'template.xml')
 
     def build_template_struct(self, json_net=None):
         """
             Read the file containing the network data and build a template from it.
         """
-
 
         template_struct = {}
         
