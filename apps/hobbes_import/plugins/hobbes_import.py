@@ -58,6 +58,7 @@ from HydraLib.HydraException import HydraPluginError
 from HydraLib.PluginLib import write_progress, write_output, validate_plugin_xml, RequestError
 
 from create_hobbes_template import HobbesTemplateBuilder 
+from HydraLib import config
 
 import json
 
@@ -150,16 +151,6 @@ class HobbesImporter(object):
             raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
 
         self.json_net = json.loads(net_response.content)
-
-    def make_repo_dataset(self, json_repo):
-        dataset = {
-            'dimension': 'dimensionless',
-            'unit':None,
-            'data_type': 'descriptor',
-            'value'    : json_repo['tag'],
-            'metadata' : json_repo,
-        }
-        return dataset
 
     def upload_template(self):
         """
@@ -280,20 +271,179 @@ class HobbesImporter(object):
         #The network ID can be specified to get the network...
         self.network = self.connection.call('add_network', {'net':hydra_network})
         return self.network
+    
+    def make_repo_dataset(self, json_repo):
 
-    def import_data(self):
+        meta = {}
+        for k, v in json_repo.items():
+            meta[k] = str(v)
+
+        dataset = {
+            'dimension': 'dimensionless',
+            'unit'     : None,
+            'type'     : 'descriptor',
+            'value'    : json_repo['tag'],
+            'metadata' : json.dumps(meta),
+            'name'     : 'repo',
+        }
+
+        return dataset
+
+    def import_data(self, include_timeseries=True):
+
+        scenario = {
+            "name" : "Hobbes Import",
+            "description" : "Import from hobbes",
+        }
+
         #List of parameters to ignore
+        non_attributes = set(['origins', 'prmname', 'regions', 'terminals', 'description', 'extras', 'type', 'repo', 'origin'])
 
-        #repo is a special case
-        repo = self.make_repo_dataset(props['repo'])
+        #Make a map from node name to a list of attributes. Do this by first
+        #making a node id map
+        node_name_id_map = {}
+        for n in self.network.nodes:
+            node_name_id_map[n.name] = n.id
 
-        extras = props.get('extras', [])
-        if extras is not None and len(extras) > 0:
-            attr_response = requests.get("http://cwn.casil.ucdavis.edu/network/extras?prmname=%s"%props['prmname']) #JSON attributes
-            if attr_response.status_code != 200:
-                raise HydraPluginError("A connection error has occurred with status code: %s"%net_response.status_code)
-            extra_data[node_name] = attr_response.content
+        node_attributes = self.connection.call('get_all_node_attributes', {'network_id':self.network.id})
 
+        node_id_attr_map = {}
+        for a in node_attributes:
+            n_attrs = node_id_attr_map.get(a.ref_id, [])
+            n_attrs.append(a)
+            node_id_attr_map[a.ref_id] = n_attrs
+
+        resource_scenarios = []
+        #request data for first 2 nodes.
+        for node in self.json_net[:10]:
+            props = node['properties']
+            name  = props['prmname'] 
+            node_id = node_name_id_map[name]
+
+            #repo is a special case
+            repo = self.make_repo_dataset(props['repo'])
+            repo_attr_id = self.attr_name_map['repo'].id
+            ra_id = None
+            for a in node_id_attr_map[node_id]:
+                if a.attr_id == repo_attr_id:
+                    ra_id = a.id
+                    break
+
+            repo_rs = dict(
+                resource_attr_id = ra_id,
+                attr_id          = repo_attr_id,
+                is_var           = 'N',
+                value            = repo,
+            )
+            resource_scenarios.append(repo_rs)
+
+            for k, v in props.items():
+                if k not in non_attributes:
+                    if isinstance(v, float):
+                        attr_id = self.attr_name_map[k].id
+                        dataset = dict(
+                            name = k,
+                            value = str(v),
+                            type        = 'scalar',
+                            dimension   = 'dimensionless',
+                            unit        = None,
+                        )
+
+                        ra_id = None
+                        for a in node_id_attr_map[node_id]:
+                            if a.attr_id == attr_id:
+                                ra_id = a.id
+                                break
+
+                        resource_scenario = dict(
+                            resource_attr_id = ra_id,
+                            attr_id          = attr_id,
+                            is_var           = 'N',
+                            value            = dataset,
+                        )
+
+                        resource_scenarios.append(resource_scenario)
+
+            #timeseries, requested from the hobbes server
+            if include_timeseries is True:
+                extras = props.get('extras', [])
+                
+                if extras is not None and len(extras) > 0:
+                    attr_response = requests.get("http://cwn.casil.ucdavis.edu/network/extras?prmname=%s"%props['prmname']) #JSON attributes
+                else:
+                    continue
+                
+                if attr_response.status_code != 200:
+                    raise HydraPluginError("A connection error has occurred with status code: %s"%attr_response.status_code)
+
+                extra_data = json.loads(attr_response.content)
+
+                non_attrs = ['prmname', 'readme']
+
+                for k, v in extra_data.items():
+                    if k in non_attrs:
+                        continue
+                    else:
+                        if len(v) < 2:
+                            continue
+
+                        ts = self.parse_timeseries(v)
+
+                        attr_id = self.attr_name_map[k].id
+                        dataset = dict(
+                            name = k,
+                            value = json.dumps(ts),
+                            type        = 'timeseries',
+                            dimension   = 'dimensionless',
+                            unit        = None,
+                        )
+
+                        ra_id = None
+                        for a in node_id_attr_map[node_id]:
+                            if a.attr_id == attr_id:
+                                ra_id = a.id
+                                break
+
+                        resource_scenario = dict(
+                            resource_attr_id = ra_id,
+                            attr_id          = attr_id,
+                            is_var           = 'N',
+                            value            = dataset,
+                        )
+
+                        resource_scenarios.append(resource_scenario)
+
+                
+
+        scenario['resourcescenarios'] = resource_scenarios
+        
+        new_scenario = self.connection.call('add_scenario', 
+                                               {'network_id':self.network.id,
+                                                'scen':scenario
+                                               })
+
+        self.scenario = new_scenario
+        return new_scenario
+
+    def parse_timeseries(self, timeseries_value):
+        """
+            Convert a hobbes timeseries to a hydra timeseries
+        """
+
+        timeformat = config.get('DEFAULT', 'datetime_format')
+
+        val = {}
+        for timeval in timeseries_value[1:]:
+            
+            time = timeval[0]
+            split = time.split('-')
+            d = datetime(year=int(split[0]), month=int(split[1]), day=int(split[2]))
+
+            tstime = datetime.strftime(d, timeformat)
+            val[tstime]  = float(timeval[1])
+
+        return {"idx1": val}
+        
 
 
 def commandline_parser():
@@ -306,6 +456,8 @@ Written by Stephen Knox <stephen.knox@manchester.ac.uk>
         formatter_class=ap.RawDescriptionHelpFormatter)
     parser.add_argument('-p', '--project-id',
                         help='''The Project to import data into. If none is provided, a new project is created.''')
+    parser.add_argument('-t', '--include-timeseries',action='store_true',
+                        help='''Retrieve timeseries data from the hobbes server. BEWARE: This is very data intensive and may take a long time''')
     parser.add_argument('-m', '--template-id',
                         help='''The ID of the template. If none is provided, a template will be created''')
     parser.add_argument('-u', '--server-url',
@@ -344,8 +496,11 @@ def run():
         
         net = hobbes_importer.import_network_topology(args.project_id)
 
+        scenario = hobbes_importer.import_data()
+
         #scenarios = [s.id for s in net.scenarios]
         network_id = net.id
+        scenario_id = scenario.id
         message = "Import complete"
     except HydraPluginError as e:
         message="An error has occurred"
@@ -356,9 +511,9 @@ def run():
         log.exception(e)
         errors = [e]
 
-    xml_response = PluginLib.create_xml_response('ImportJSON',
+    xml_response = PluginLib.create_xml_response('Import Hobbes',
                                                  network_id,
-                                                 scenarios,
+                                                 [scenario_id],
                                                  errors,
                                                  hobbes_importer.warnings,
                                                  message,

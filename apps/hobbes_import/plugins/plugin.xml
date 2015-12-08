@@ -38,5 +38,10 @@
         </arg>
     </non_mandatory_args> 
     <switches>
+        <arg>
+            <name>Include Timeseries Data</name>
+            <switch>-t</switch>
+            <help>Retrieve timeseries data from the hobbes server. BEWARE: This is very data intensive and may take a long time.</help>
+        </arg>
     </switches>
  </plugin_info>
