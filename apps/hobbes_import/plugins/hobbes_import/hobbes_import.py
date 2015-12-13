@@ -115,7 +115,7 @@ class HobbesImporter(object):
         """
         if project_id is not None:
             try:
-                project = self.connection.call('get_project', {'project_id':project_id})
+                project = self.connection.call('get_project', {'project_id':int(project_id)})
                 log.info('Loading existing project (ID=%s)' % project_id)
                 return project
             except RequestError:
@@ -136,7 +136,14 @@ class HobbesImporter(object):
     def fetch_template(self, template_id):
         self.template = self.connection.call('get_template',
                                              {'template_id':int(template_id)})
+                                             
+        self.attributes = self.connection.call('get_template_attributes',
+                                               {'template_id':int(template_id)})
 
+        #Build a lookup dict of attributes by name
+        for a in self.attributes:
+            self.attr_name_map[a.name] = a
+            
     def fetch_remote_network(self):
         """
             Request the hobbes network from the hobbes server
@@ -170,7 +177,7 @@ class HobbesImporter(object):
         #Build a lookup dict of attributes by name
         for a in self.attributes:
             self.attr_name_map[a.name] = a
-
+            
     def import_network_topology(self, project_id=None):
         """
             Read the file containing the network data and send it to
@@ -189,10 +196,10 @@ class HobbesImporter(object):
 
             #TODO: HACK. WHy are there 2 coordinates for the node?
             if isinstance(node_coords[0], list):
-                log.info("Using 1st coords of %s (%s)", node_coords, props['type'])
+                #log.debug("Using 1st coords of %s (%s)", node_coords, props['type'])
                 node_coords = node_coords[0]
 
-            log.info("X=%s, y=%s",node_coords[0], node_coords[1]) 
+            #log.info("X=%s, y=%s",node_coords[0], node_coords[1]) 
             node = dict(
                 id = tmp_node_id,
                 name = props['prmname'],
@@ -256,7 +263,9 @@ class HobbesImporter(object):
         write_output("Saving Network") 
         write_progress(3, self.num_steps) 
 
-
+        for t in self.template.types:
+            if t.name == 'HobbesNetwork':
+                network_type = t.id
         hydra_network = {
             'name' : "HOBBES Network (%s)"%datetime.now(),
             'description' : "Hobbes Network, imported directly from the web API",
@@ -264,8 +273,10 @@ class HobbesImporter(object):
             'links': self.links.values(),
             'project_id' : project_id,
             'projection':'EPSG:2229',
-            'groups': [],
-            'scenarios': []
+            'groups'   : [],
+            'scenarios': [],
+            'types'    : [{'template_id':self.template.id,
+                          'id':network_type}]
         }
 
         #The network ID can be specified to get the network...
@@ -478,6 +489,7 @@ def run():
     scenarios = []
     errors = []
     network_id = None
+    scenario_id = None
     try:      
         write_progress(1, hobbes_importer.num_steps) 
         
@@ -486,7 +498,6 @@ def run():
         #This step is to avoid doing the request to make the template and 
         #then again for the data.
         hobbes_importer.fetch_remote_network()
-        
         if args.template_id is None:
             tmpl = HobbesTemplateBuilder()
             tmpl.convert(hobbes_importer.json_net)

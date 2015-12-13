@@ -37,7 +37,7 @@ class HobbesTemplateBuilder(object):
     #Keeps track of all the timeseries we identify in hobbes nodes so we
     #can set the correct data type in the template.
     timeseries = []
-    output = os.path.join(__location__, '../', 'template', 'template.xml')
+    output = os.path.join(__location__, '../', '../', 'template', 'HobbesTemplate', 'template', 'template.xml')
 
     def build_template_struct(self, json_net=None):
         """
@@ -94,7 +94,7 @@ class HobbesTemplateBuilder(object):
 
         template_struct = self.build_template_struct(json_net)
 
-        template_name = 'HydraPlatform template for Hobbes'
+        template_name = 'HobbesTemplate'
 
         tree = etree.Element('template_definition')
         tname = etree.SubElement(tree, 'template_name')
@@ -124,6 +124,16 @@ class HobbesTemplateBuilder(object):
 
         groups = etree.SubElement(cat, 'groups')
 
+        grp = etree.SubElement(groups, 'group')
+        grpname  = etree.SubElement(grp, 'name')
+        grpname.text = 'HobbesLink'
+        grpdesc  = etree.SubElement(grp, 'description')
+        grpdesc.text = 'HobbesLink'
+        grpdispname  = etree.SubElement(grp, 'displayname')
+        grpdispname.text = 'HobbesLink'
+        grpdispname  = etree.SubElement(grp, 'image')
+        grpdispname.text = 'images/black_line.png'
+        
         for type_name in template_struct:
             grp = etree.SubElement(groups, 'group')
             grpname  = etree.SubElement(grp, 'name')
@@ -133,10 +143,37 @@ class HobbesTemplateBuilder(object):
             grpdispname  = etree.SubElement(grp, 'displayname')
             grpdispname.text = type_name
             grpdispname  = etree.SubElement(grp, 'image')
-            grpdispname.text = ''
+            grpdispname.text = 'images/black_dot.png'
 
         ress = etree.SubElement(tree, 'resources')
-
+        
+        #NETWORK DEFINITION 
+        res = etree.SubElement(ress, 'resource')
+        typ = etree.SubElement(res, 'type')
+        typ.text = 'NETWORK'
+        name = etree.SubElement(res, 'name')
+        name.text = 'HobbesNetwork'
+        
+        #LINK DEFINITION
+        link_res = etree.SubElement(ress, 'resource')
+        typ = etree.SubElement(link_res, 'type')
+        typ.text = 'LINK'
+        name = etree.SubElement(link_res, 'name')
+        name.text = 'HobbesLink'
+        
+        layout = etree.SubElement(link_res, 'layout')
+        item = etree.SubElement(layout, 'item')
+        name = etree.SubElement(item, 'name')
+        name.text = 'image'
+        value = etree.SubElement(item, 'value')
+        value.text = 'images/black_line.png'
+        item = etree.SubElement(layout, 'item')
+        name = etree.SubElement(item, 'name')
+        name.text = 'group'
+        value = etree.SubElement(item, 'value')
+        value.text = 'HobbesLink'
+        
+        #NODE DEFINITIONS
         for type_name in template_struct:
             res = etree.SubElement(ress, 'resource')
             typ = etree.SubElement(res, 'type')
@@ -144,6 +181,20 @@ class HobbesTemplateBuilder(object):
 
             name = etree.SubElement(res, 'name')
             name.text = type_name
+            
+            layout = etree.SubElement(res, 'layout')
+            
+            item = etree.SubElement(layout, 'item')
+            name = etree.SubElement(item, 'name')
+            name.text = 'group'
+            value = etree.SubElement(item, 'value')
+            value.text = type_name
+            
+            item = etree.SubElement(layout, 'item')
+            name = etree.SubElement(item, 'name')
+            name.text = 'image'
+            value = etree.SubElement(item, 'value')
+            value.text = 'images/black_dot.png'
 
             for a in template_struct[type_name]:
                 att = etree.SubElement(res, 'attribute')
@@ -153,6 +204,8 @@ class HobbesTemplateBuilder(object):
                 att_dim.text = 'dimensionless'
                 att_var = etree.SubElement(att, 'is_var')
                 att_var.text = 'N'
+                data_type = etree.SubElement(att, 'data_type')
+                data_type.text = 'descriptor'
 
         with open(self.output, "w") as fout:
             fout.write(etree.tostring(tree, pretty_print=True))
